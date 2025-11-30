@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Limit-Order.hs Smart Contract Tutorial</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#fbfdff;
+      --card:#ffffff;
+      --accent:#003b63;
+      --muted:#6b7280;
+      --code:#f4f6f8;
+    }
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,var(--bg),#f7fbff 60%);
+      color: #0b1720;
+      margin: 0;
+      padding: 28px;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      background: var(--card);
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(12,24,40,0.06);
+      padding: 28px;
+      border: 1px solid rgba(2,40,80,0.03);
+    }
+    h1 { color: var(--accent); margin-top: 0; font-size: 28px; }
+    h2 { color: var(--accent); font-size: 20px; margin-bottom: 6px; }
+    h3 { color: #13455a; font-size: 16px; margin-bottom: 6px; }
+    p { margin: 0 0 12px 0; }
+    pre {
+      background: var(--code);
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin: 10px 0 18px 0;
+      border: 1px solid rgba(2,40,80,0.03);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+      font-size: 13px;
+    }
+    code { background: #eef6fb; padding: 2px 6px; border-radius: 6px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { text-align: left; border: 1px solid #e6eef6; padding: 10px; vertical-align: top; }
+    th { background: #f6fbff; color: var(--accent); }
+    ul { padding-left: 1.1rem; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .kbd { background:#eef2ff;border:1px solid #dfeaff;padding:4px 8px;border-radius:6px;font-family:monospace; }
+    footer { margin-top:18px; color:var(--muted); font-size:13px; }
+    .pill { display:inline-block;background:#e8f4ff;color: #033b63;padding:6px 10px;border-radius:999px;font-weight:600;font-size:12px;margin-right:6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧭 Tutorial: <code>limit-order.hs</code> — Limit Order Smart Contract (Plutus V2)</h1>
+
+```
+<p class="muted">A friendly walkthrough that explains each piece of your Haskell/Plutus limit-order validator, how it works on-chain, and how to build/use the compiled script files produced by the <code>main</code> function in your program.</p>
+
+<hr />
+
+<h2>📚 Table of contents</h2>
+<ol>
+  <li><a href="#overview">Overview & Purpose</a></li>
+  <li><a href="#imports">Imports & Language Pragmas</a></li>
+  <li><a href="#datum-redeemer">Datum & Redeemer Structures</a></li>
+  <li><a href="#price-check">Price-check helper (<code>priceOK</code>)</a></li>
+  <li><a href="#validator-logic">Core Validator Logic (<code>mkValidator</code>)</a></li>
+  <li><a href="#untyped-wrapper">Untyped wrapper & compilation</a></li>
+  <li><a href="#addresses">Script hash & Bech32 address</a></li>
+  <li><a href="#file-writing">File writing & <code>main</code> usage</a></li>
+  <li><a href="#testing">Testing strategy & edge cases</a></li>
+  <li><a href="#best-practices">Best practices</a></li>
+  <li><a href="#glossary">Glossary</a></li>
+</ol>
+
+<hr />
+
+<h2 id="overview">1. ✅ Overview & Purpose</h2>
+<p>This smart contract implements a simple on-chain limit-order pattern. It stores an <code>OrderDatum</code> on-chain representing a limit order (owner, pair, side, limit price, total quantity, remaining). Two actor actions are allowed:</p>
+<ul>
+  <li><strong>Fill</strong> — a taker fills some amount of the order at a given execution price (execN/execD). The validator must ensure:</li>
+  <ul>
+    <li>the requested <code>amount</code> ≤ remaining</li>
+    <li>the execution price satisfies the limit price depending on side (BUY / SELL)</li>
+    <li>the continuing output updates <code>odRemaining</code> correctly (decremented by <code>amount</code>)</li>
+  </ul>
+  <li><strong>Cancel</strong> — the owner cancels the order; transaction must be signed by the order owner.</li>
+</ul>
+
+<h2 id="imports">2. 📦 Language pragmas & Imports</h2>
+<p class="muted">Key pragmas used:</p>
+<ul>
+  <li><code>DataKinds</code>, <code>NoImplicitPrelude</code>, <code>TemplateHaskell</code>, <code>ScopedTypeVariables</code>, <code>OverloadedStrings</code>, <code>TypeApplications</code></li>
+</ul>
+
+<p class="muted">Critical imported modules (high level):</p>
+<ul>
+  <li><code>Plutus.V2.Ledger.Api</code>, <code>Plutus.V2.Ledger.Contexts</code> — on-chain types & helpers</li>
+  <li><code>Plutus.V1.Ledger.Value</code> — helpful utility like <code>valueOf</code> if needed off-chain</li>
+  <li><code>PlutusTx</code>, <code>PlutusTx.Prelude</code> — compilation helpers and on-chain prelude</li>
+  <li><code>Cardano.Api</code>, <code>Cardano.Api.Shelley</code> — for serialising script to file and deriving Bech32 address</li>
+  <li>Data serialisation helpers (<code>Codec.Serialise</code>, <code>ByteString</code> utilities)</li>
+</ul>
+
+<h2 id="datum-redeemer">3. 🗃 Datum & Redeemer</h2>
+
+<h3><code>OrderDatum</code></h3>
+<pre><code>data OrderDatum = OrderDatum
+```
+
+{ odOwner     :: PubKeyHash
+, odBase      :: CurrencySymbol
+, odQuote     :: CurrencySymbol
+, odSide      :: Bool            -- True = BUY, False = SELL
+, odLimitNum  :: Integer
+, odLimitDen  :: Integer
+, odQty       :: Integer
+, odRemaining :: Integer
+}</code></pre>
+
+```
+<p>Notes:</p>
+<ul>
+  <li><code>odOwner</code> — owner who may cancel the order (PubKeyHash)</li>
+  <li><code>odBase</code>/<code>odQuote</code> — currency pair used to interpret prices (CurrencySymbols)</li>
+  <li><code>odSide</code> — <code>True</code> for BUY orders (maker wants to buy <code>base</code> for <code>quote</code>), <code>False</code> for SELL</li>
+  <li><code>odLimitNum/odLimitDen</code> — rational limit price represented as num/den; compare with taker execution price <code>execN/execD</code></li>
+  <li><code>odQty</code> and <code>odRemaining</code> — total & remaining units of base asset</li>
+</ul>
+
+<h3><code>OrderAction</code> (Redeemer)</h3>
+<pre><code>data OrderAction
+```
+
+= Fill Integer Integer Integer    -- amount, execNum, execDen
+| Cancel</code></pre>
+
+```
+<p>The <code>Fill</code> redeemer carries the amount to fill and the execution price as a rational (execN/execD). The validator must validate these values.</p>
+
+<h2 id="price-check">4. 🔎 Price-check helper — <code>priceOK</code></h2>
+<pre><code>{-# INLINABLE priceOK #-}
+```
+
+priceOK :: Bool -> Integer -> Integer -> Integer -> Integer -> Bool
+priceOK side limitN limitD execN execD =
+if side
+then execN * limitD <= limitN * execD       -- BUY: taker price <= limit
+else execN * limitD >= limitN * execD       -- SELL: taker price >= limit</code></pre>
+
+```
+<p>Explanation:</p>
+<ul>
+  <li>On a BUY order (maker wants to buy base with quote at or below <code>limit</code>), the taker’s exec price must be ≤ maker’s limit price.</li>
+  <li>For SELL, the taker price must be ≥ maker’s limit price.</li>
+  <li>Multiplying across avoids floating point arithmetic — compare integers via cross-multiplication.</li>
+</ul>
+
+<h2 id="validator-logic">5. 🧠 Core Validator Logic — <code>mkValidator</code></h2>
+
+<pre><code>{-# INLINABLE mkValidator #-}
+```
+
+mkValidator :: OrderDatum -> OrderAction -> ScriptContext -> Bool
+mkValidator dat act ctx =
+case act of
+Fill amount execN execD -> ...     -- checks: remaining, priceOK, remaining update
+Cancel -> txSignedBy info (odOwner dat)</code></pre>
+
+```
+<h3>Key checks for <code>Fill</code>:</h3>
+<ol>
+  <li><strong>Remaining sufficient:</strong> <code>amount &lt;= odRemaining dat</code></li>
+  <li><strong>Price validation:</strong> <code>priceOK (odSide dat) (odLimitNum dat) (odLimitDen dat) execN execD</code></li>
+  <li><strong>Continuing output updates datum:</strong> The validator expects a single continuing output that holds the same script address and a new datum whose <code>odRemaining</code> equals <code>odRemaining dat - amount</code>. If the order is fully filled you might instead expect no continuing outputs (your current code errors if continuing output is missing).</li>
+</ol>
+
+<p class="muted">Important on-chain assumptions and failure modes:</p>
+<ul>
+  <li>If <code>getContinuingOutputs</code> returns a single continuing output, the validator reads its datum and enforces correct remaining update. If there are zero or multiple continuing outputs, the validator will fail.</li>
+  <li>Your validator emits clear <code>traceIfFalse</code> messages like <em>"remaining insufficient"</em>, <em>"bad price"</em>, and <em>"must update remaining"</em> to help debug failures when running emulation traces or testing.</li>
+</ul>
+
+<h2 id="untyped-wrapper">6. 🧩 Untyped wrapper & script compilation</h2>
+<p>The contract includes an untyped wrapper to turn typed validator into <code>BuiltinData</code>-accepting entrypoint:</p>
+<pre><code>{-# INLINABLE mkValidatorUntyped #-}
+```
+
+mkValidatorUntyped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkValidatorUntyped d r c =
+let dat = unsafeFromBuiltinData @OrderDatum d
+red = unsafeFromBuiltinData @OrderAction r
+ctx = unsafeFromBuiltinData @ScriptContext c
+in if mkValidator dat red ctx then () else error ()</code></pre>
+
+```
+<p>Then the typed script is compiled and packaged as a <code>Validator</code>:</p>
+<pre><code>validator :: Validator
+```
+
+validator = mkValidatorScript $$(PlutusTx.compile [|| mkValidatorUntyped ||])</code></pre>
+
+```
+<p class="muted">This <code>validator</code> value is what's serialized to the <code>.plutus</code> file and turned into a script hash and address.</p>
+
+<h2 id="addresses">7. 🧾 Script hash & Bech32 address</h2>
+
+<p>The code includes helpers to produce the V2 validator hash and an on-chain address (and Bech32 text):</p>
+
+<pre><code>plutusValidatorHash :: PlutusV2.Validator -> PlutusV2.ValidatorHash
+```
+
+plutusScriptAddress :: Address
+toBech32ScriptAddress :: C.NetworkId -> Validator -> String</code></pre>
+
+```
+<p>How <code>toBech32ScriptAddress</code> works (summary):</p>
+<ul>
+  <li>Serialises the <code>Validator</code> to bytes, wraps into a <code>PlutusScriptSerialised</code>.</li>
+  <li>Creates a Cardano <code>ScriptHash</code> and constructs a Shelley-era script address with <code>makeShelleyAddressInEra</code> using <code>PaymentCredentialByScript</code>.</li>
+  <li>Serialises the address to Bech32 string with <code>serialiseAddress</code>.</li>
+</ul>
+
+<h2 id="file-writing">8. 💾 File writing & <code>main</code> usage</h2>
+
+<p>Your provided <code>main</code> demonstrates how to write the compiled validator out and print details:</p>
+<pre><code>main :: IO ()
+```
+
+main = do
+let network = C.Testnet (C.NetworkMagic 1)
+writeValidator "limit-order.plutus" validator
+let vh      = plutusValidatorHash validator
+onchain = plutusScriptAddress
+bech32  = toBech32ScriptAddress network validator
+putStrLn $ "Validator Hash: " <> P.show vh
+putStrLn $ "Script Address: " <> P.show onchain
+putStrLn $ "Bech32 Address: " <> bech32</code></pre>
+
+```
+<p class="muted">The helper <code>writeValidator</code> writes the CBOR/serialised validator to disk and prints the filepath.</p>
+
+<h2 id="testing">9. 🧪 Testing strategy & common edge cases</h2>
+<h3>Unit & property tests to write</h3>
+<ul>
+  <li>Test <code>priceOK</code> for boundary cases where exec price equals limit price (should pass).</li>
+  <li>Test <code>Fill</code> with <code>amount == odRemaining</code> — ensure your validator either expects zero continuing outputs (fully consumed) or explicitly handles zero-case. Current code expects exactly one continuing output; adjust logic if you want to allow final fill that removes the UTxO.</li>
+  <li>Test <code>Fill</code> with invalid price — should fail.</li>
+  <li>Test <code>Fill</code> where continuing output's datum is malformed or missing — should fail with helpful error.\li>
+  <li>Test <code>Cancel</code> requires <code>odOwner</code> signature; attempt cancellation from wrong signer should fail.</li>
+</ul>
+
+<h3>Suggested improvements to catch common mistakes</h3>
+<ul>
+  <li>Allow <code>getContinuingOutputs</code> to return zero outputs when <code>odRemaining - amount == 0</code> (order fully filled). Right now the code errors if no continuing output exists.</li>
+  <li>Validate that the continuing output remains locked at the same script address — your use of <code>getContinuingOutputs</code> already implies this, but make it explicit in traces for easier debugging.</li>
+  <li>Sanity-check the <code>execD</code> and <code>limitDen</code> are non-zero to avoid division-by-zero style logic (though using cross-multiplication avoids division, zero denominators might still be unexpected data). Consider rejecting zero denominators with a trace message.</li>
+</ul>
+
+<h2 id="best-practices">10. ✅ Best practices & tips</h2>
+<ul>
+  <li><strong>Clear error traces:</strong> Keep informative <code>traceIfFalse</code> messages — they are invaluable while debugging in emulator tests.</li>
+  <li><strong>Datatype invariants:</strong> Validate/assume in off-chain code that <code>odLimitDen</code> & <code>odLimitNum</code> are positive.</li>
+  <li><strong>Fully filled behavior:</strong> Decide on the protocol: should a taker fully filling the order produce no continuing UTxO? If yes, adapt validator accordingly.</li>
+  <li><strong>Off-chain tooling:</strong> Ensure the off-chain code crafting the <code>Fill</code> redeemer includes the correct execution price numerator/denominator and the exact <code>amount</code>.</li>
+  <li><strong>Gas & size:</strong> Keep datum/redeemer sizes minimal to reduce on-chain costs — pack only necessary fields.</li>
+</ul>
+
+<h2 id="glossary">11. 📘 Glossary</h2>
+<table>
+  <tr><th>Term</th><th>Meaning</th></tr>
+  <tr><td><code>Datum</code></td><td>On-chain data attached to the script UTxO describing state (here: the order details).</td></tr>
+  <tr><td><code>Redeemer</code></td><td>Data provided by the transaction to indicate the action (here: <code>Fill</code> or <code>Cancel</code>).</td></tr>
+  <tr><td><code>ScriptContext</code></td><td>On-chain transaction context available to the validator (signatories, inputs, outputs, valid range).</td></tr>
+  <tr><td><code>Continuing outputs</code></td><td>Outputs from the spending transaction that remain at the same script address (used to represent updated state).</td></tr>
+  <tr><td><code>Bech32</code></td><td>Human-readable Cardano address encoding produced by <code>serialiseAddress</code>.</td></tr>
+</table>
+
+<hr />
+
+<h2>Example quick reference — Common code snippets</h2>
+<pre><code>-- check remaining is decremented by amount
+```
+
+checkRemainingUpdate :: Integer -> Bool
+checkRemainingUpdate amount =
+case txOutDatum newOutput of
+OutputDatum d ->
+case fromBuiltinData (getDatum d) of
+Just newDat -> odRemaining newDat == odRemaining dat - amount
+Nothing -> traceError "bad datum"
+_ -> traceError "expected output datum"</code></pre>
+
+```
+<p class="muted">If you'd like, I can produce:</p>
+<ul>
+  <li>A variant of the validator that handles the "fully filled" case (no continuing output)</li>
+  <li>Off-chain helper snippets (cardano-cli commands or cardano-api code) to build transactions that <code>Fill</code> or <code>Cancel</code></li>
+  <li>Unit tests using Plutus emulator traces demonstrating typical successful and failing flows</li>
+</ul>
+
+<footer>
+  <div class="pill">Tip</div>
+  <span class="muted">This tutorial is generated from your contract source. If you want a printable README or a markdown version, tell me which format (README.md, PDF, or HTML) and I’ll produce it exactly the way you need.</span>
+</footer>
+```
+
+  </div>
+</body>
+</html>

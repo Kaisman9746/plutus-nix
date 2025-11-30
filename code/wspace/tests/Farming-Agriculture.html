@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Farming.hs Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fbfcfd;
+      padding: 16px;
+      line-height: 1.6;
+      color: #122;
+      max-width: 980px;
+      margin: 24px auto;
+    }
+    h1, h2, h3 { color: #033a59; }
+    pre {
+      background: #f4f6f7;
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+      border: 1px solid #e1e6ea;
+    }
+    code { background: #eef3f6; padding: 2px 6px; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    table, th, td { border: 1px solid #d8e2e6; }
+    th, td { padding: 10px; text-align: left; }
+    a { color: #0077cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .small { font-size: 0.95rem; color: #445; }
+  </style>
+</head>
+<body>
+
+  <h1>🌾 Farming.hs — Detailed Tutorial & Reference</h1>
+  <p class="small">A readable guide to the provided <code>Farming.hs</code> Plutus smart contract (validator, minting policy, and serialization helpers).</p>
+
+  <hr>
+
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#imports">Imports Overview</a></li>
+    <li><a href="#datatypes">Data Types</a></li>
+    <li><a href="#validator">Validator Logic (farmValidator)</a></li>
+    <li><a href="#untyped">Untyped Wrapper</a></li>
+    <li><a href="#minting">Minting Policy (coop mint)</a></li>
+    <li><a href="#serialization">Serialization Helpers</a></li>
+    <li><a href="#usage">Practical Usage Examples</a></li>
+    <li><a href="#testing">Testing Strategy</a></li>
+    <li><a href="#bestpractices">Best Practices & Security Notes</a></li>
+    <li><a href="#glossary">Glossary</a></li>
+  </ol>
+
+  <hr>
+
+  <h2 id="imports">1. 📦 Imports Overview</h2>
+
+  <p>This contract uses Plutus V2 on-chain types and PlutusTx helpers. Key imports:</p>
+  <ul>
+    <li><code>Plutus.V2.Ledger.Api</code> — validator, datum, redeemer, POSIXTime, PubKeyHash, Validator, MintingPolicy, etc.</li>
+    <li><code>PlutusTx</code>, <code>PlutusTx.Prelude</code> — on-chain compilation and Prelude utilities (note: some Prelude functions are hidden to avoid clashes).</li>
+    <li><code>Plutus.V2.Ledger.Contexts</code> — <code>ScriptContext</code> and <code>txSignedBy</code>.</li>
+    <li><code>Plutus.V1.Ledger.Interval</code> — interval helpers: <code>from</code>, <code>to</code>, <code>contains</code>, <code>after</code>.</li>
+    <li>Serialization helpers from <code>Codec.Serialise</code> and <code>Data.ByteString.Char8</code> for writing compiled scripts to disk.</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="datatypes">2. 🗃 Data Types</h2>
+
+  <p>The contract defines two on-chain types — a datum describing a farming investment and a redeemer indicating the intent.</p>
+
+  <pre><code>data FarmDatum = FarmDatum
+    { fdFarmer      :: PubKeyHash
+    , fdCoop        :: PubKeyHash
+    , fdInvestment  :: Integer
+    , fdProfitShare :: Integer
+    , fdStart       :: POSIXTime
+    , fdExpiry      :: POSIXTime
+    }
+PlutusTx.unstableMakeIsData ''FarmDatum
+
+data FarmRedeemer = Harvest | Refund
+PlutusTx.unstableMakeIsData ''FarmRedeemer
+</code></pre>
+
+  <p class="small"><strong>Meaning:</strong></p>
+  <ul>
+    <li><code>fdFarmer</code> — the farmer's PubKeyHash who may receive refunds or harvest depending on rules.</li>
+    <li><code>fdCoop</code> — cooperative's PubKeyHash (used by the minting policy to restrict minting to the coop signer).</li>
+    <li><code>fdInvestment</code> — an integer tracking invested amount (application-level; contract does not automatically enforce token accounting beyond datum semantics).</li>
+    <li><code>fdProfitShare</code> — profit share percentage or units (contract-level semantics left to off-chain logic).</li>
+    <li><code>fdStart</code>, <code>fdExpiry</code> — POSIXTime bounds used to gate harvest/refund actions.</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="validator">3. 🧠 Core Validator Logic (<code>farmValidator</code>)</h2>
+
+  <p>The validator enforces two on-chain actions depending on the redeemer:</p>
+
+  <pre><code>{-# INLINABLE farmValidator #-}
+farmValidator :: FarmDatum -> FarmRedeemer -> ScriptContext -> Bool
+farmValidator datum redeemer ctx =
+  let
+    info   = scriptContextTxInfo ctx
+    farmer = fdFarmer datum
+    start  = fdStart datum
+    expiry = fdExpiry datum
+    range  = txInfoValidRange info
+  in
+  case redeemer of
+
+    Harvest ->
+      traceIfFalse "harvest too early" (contains (from start) range) &&
+      traceIfFalse "harvest too late"  (contains (to expiry) range)
+
+    Refund ->
+      traceIfFalse "refund too early" (contains (from (expiry + 1)) range) &&
+      traceIfFalse "farmer not signed" (txSignedBy info farmer)
+</code></pre>
+
+  <h3>What it enforces</h3>
+  <ul>
+    <li><strong>Harvest:</strong> Can only be executed when the transaction validity range is at or after <code>start</code> and on or before <code>expiry</code>. If either check fails, it returns an on-chain error string.</li>
+    <li><strong>Refund:</strong> Can only be executed strictly after <code>expiry</code> (<code>from (expiry + 1)</code>) and must be signed by the <code>fdFarmer</code> PubKeyHash.</li>
+  </ul>
+
+  <p class="small"><strong>Notes & subtleties:</strong> The validator uses <code>txInfoValidRange</code> and interval helpers; this means exact behavior depends on how off-chain code creates the transaction validity interval. Also, the validator checks only the farmer signature and time — other checks (like amount or presence of specific tokens) are off-chain responsibilities unless you add them on-chain.</p>
+
+  <hr>
+
+  <h2 id="untyped">4. 🔧 Untyped Wrapper (<code>mkWrapped</code>)</h2>
+
+  <pre><code>{-# INLINABLE mkWrapped #-}
+mkWrapped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkWrapped d r c =
+  let
+    datum     = PlutusTx.unsafeFromBuiltinData d
+    redeemer  = PlutusTx.unsafeFromBuiltinData r
+    context   = PlutusTx.unsafeFromBuiltinData c
+  in
+  if farmValidator datum redeemer context
+    then ()
+    else error ()
+</code></pre>
+
+  <p>This wrapper converts raw <code>BuiltinData</code> into the typed Haskell types and calls <code>farmValidator</code>. The compiled validator uses the wrapper so it can be executed by the ledger.</p>
+
+  <pre><code>validator :: Validator
+validator = mkValidatorScript $$(PlutusTx.compile [|| mkWrapped ||])
+</code></pre>
+
+  <hr>
+
+  <h2 id="minting">5. 🪙 Minting Policy (coop mint)</h2>
+
+  <p>The contract includes a simple minting policy that requires the coop's signature to mint/burn tokens:</p>
+
+  <pre><code>{-# INLINABLE mkCoopMintPolicy #-}
+mkCoopMintPolicy :: PubKeyHash -> ScriptContext -> Bool
+mkCoopMintPolicy coop ctx =
+  traceIfFalse "coop signature missing" (txSignedBy (scriptContextTxInfo ctx) coop)
+
+
+{-# INLINABLE mkUntyped #-}
+mkUntyped :: (ScriptContext -> Bool) -> BuiltinData -> BuiltinData -> ()
+mkUntyped f _ ctx =
+  if f (PlutusTx.unsafeFromBuiltinData ctx)
+    then ()
+    else error ()
+
+
+policy :: PubKeyHash -> MintingPolicy
+policy pkh =
+  mkMintingPolicyScript $
+    $$(PlutusTx.compile [||
+        \pkh' -> mkUntyped (mkCoopMintPolicy pkh')
+    ||])
+    `PlutusTx.applyCode`
+    PlutusTx.liftCode pkh
+</code></pre>
+
+  <h3>Summary</h3>
+  <ul>
+    <li>The policy is parameterized by a <code>PubKeyHash</code> (the coop's Pkh).</li>
+    <li>It returns true only when that coop signs the transaction (<code>txSignedBy</code>).</li>
+    <li>Use this to mint tokens that represent e.g. farm shares, receipts, or reward tokens — minting is centrally controlled by the coop signer.</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="serialization">6. 💾 Serialization & File Output</h2>
+
+  <p>The contract provides helpers to serialise and write the validator and policy to disk as byte strings. These are typically used in off-chain tooling to produce <code>.plutus</code> or policy files for submission or address derivation.</p>
+
+  <pre><code>writeValidator :: FilePath -> Validator -> IO ()
+writeValidator fp v = do
+  let bs = serialise v
+  C.writeFile fp (C.pack (show bs))
+
+writePolicy :: FilePath -> MintingPolicy -> IO ()
+writePolicy fp p = do
+  let bs = serialise p
+  C.writeFile fp (C.pack (show bs))
+</code></pre>
+
+  <p class="small">Tip: many toolchains expect CBOR-encoded scripts or hex. The exact format you write and how off-chain tools consume it may vary. The helpers above write the <code>show</code>-encoded serialised bytestring which is useful for simple pipelines — adapt as needed for your integration.</p>
+
+  <hr>
+
+  <h2 id="usage">7. 🧪 Practical Usage Examples</h2>
+
+  <p>Basic steps you can perform with this module (off-chain scripts / CLI):</p>
+  <ol>
+    <li>Compile the module (GHC) to ensure the on-chain code compiles to a validator & policy.</li>
+    <li>Call <code>writeValidator "farm.plutus" validator</code> to persist the validator script.</li>
+    <li>Call <code>writePolicy "coop-policy.plutus" (policy coopPkh)</code> to persist the minting policy (replace <code>coopPkh</code> with the coop PubKeyHash).</li>
+    <li>In your off-chain code: construct appropriate <code>FarmDatum</code> JSON, attach it when locking UTxOs at the validator address, and supply <code>FarmRedeemer</code> (either <code>Harvest</code> or <code>Refund</code>) when spending.</li>
+  </ol>
+
+  <pre><code>-- Example (off-chain pseudo)
+-- Lock funds with FarmDatum { fdFarmer = farmerPkh, fdCoop = coopPkh, fdStart = start, fdExpiry = expiry, ... }
+-- To harvest: create tx with validity range including start..expiry and no need for farmer signature
+-- To refund: create tx after expiry and sign with farmerPkh
+</code></pre>
+
+  <p class="small"><strong>Important:</strong> This contract checks only time windows and farmer signature for refund — it does not automatically check profit accounting or that the coop has done something specific. Such rules must be enforced by additional on-chain checks (e.g., verifying minted token amounts, checking outputs) or by careful off-chain construction.</p>
+
+  <hr>
+
+  <h2 id="testing">8. 🔬 Testing Strategy</h2>
+
+  <ul>
+    <li><strong>Unit tests for the validator:</strong> Use <code>plutus-contract</code> or emulator traces to test the two branches thoroughly:
+      <ul>
+        <li>Harvest at <code>start - 1</code> (should fail)</li>
+        <li>Harvest at <code>start</code> (should succeed if within expiry)</li>
+        <li>Harvest at <code>expiry + 1</code> (should fail)</li>
+        <li>Refund at <code>expiry + 1</code> with farmer signature (should succeed)</li>
+        <li>Refund before expiry or without farmer signature (should fail)</li>
+      </ul>
+    </li>
+    <li><strong>Minting policy tests:</strong> ensure only transactions signed by <code>fdCoop</code> can mint/burn. Try minting with and without the coop signature.</li>
+    <li><strong>Edge cases:</strong> test exact interval boundaries (use precise POSIXTime values), multiple inputs/outputs, and interactions with token minting (ensure tokens are associated properly to outputs).</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="bestpractices">9. ✅ Best Practices & Security Notes</h2>
+
+  <ul>
+    <li>Prefer explicit checks on token amounts or token names if token accounting matters (e.g., ensure the expected minted tokens are present in outputs).</li>
+    <li>Use meaningful <code>traceIfFalse</code> messages for on-chain debugging (the contract already contains concise messages).</li>
+    <li>Be careful with <code>txInfoValidRange</code> — the off-chain wallet must set the validity interval correctly; testing must cover typical wallet behaviours.</li>
+    <li>Consider making the minting policy more restrictive if needed (e.g., require presence of a particular UTxO or additional signatures).</li>
+    <li>Keep the datum small and deterministic; large datums increase on-chain storage cost.</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="glossary">10. 📘 Glossary</h2>
+
+  <table>
+    <tr><th>Term</th><th>Meaning</th></tr>
+    <tr><td>Validator</td><td>On-chain script that validates spending of UTxOs locked by it.</td></tr>
+    <tr><td>Datum</td><td>On-chain data attached to a script UTxO (here: <code>FarmDatum</code>).</td></tr>
+    <tr><td>Redeemer</td><td>Off-chain input to the validator that indicates intent (<code>Harvest</code> / <code>Refund</code>).</td></tr>
+    <tr><td>Minting Policy</td><td>Script that restricts minting/burning of native tokens (here: coop must sign).</td></tr>
+    <tr><td>txInfoValidRange</td><td>Tx validity interval — used to check time window constraints.</td></tr>
+    <tr><td>txSignedBy</td><td>Checks whether a given public key hash signed the transaction.</td></tr>
+  </table>
+
+  <hr>
+
+  <h3>Full main function</h3>
+  <pre><code>main :: IO ()
+main = do
+  putStrLn "Farming contract compiled successfully."
+</code></pre>
+
+  <p class="small">If you'd like, I can:</p>
+  <ul>
+    <li>Generate a ready-to-paste README.md (markdown) from this HTML.</li>
+    <li>Produce example off-chain code snippets (e.g., cardano-cli commands or a minimal off-chain contract) that demonstrate locking funds and spending them.</li>
+    <li>Convert the <code>writeValidator</code>/<code>writePolicy</code> helpers to write CBOR hex or a format compatible with a specific tool (give me the target tool).</li>
+  </ul>
+
+  <p style="margin-top:18px;">Would you like me to generate the README version or example off-chain scripts next? — I can produce them right away.</p>
+
+</body>
+</html>

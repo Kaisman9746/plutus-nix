@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ORDER.hs Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fdfdfd;
+      padding: 18px;
+      line-height: 1.7;
+      color: #222;
+      max-width: 980px;
+      margin: 18px auto;
+    }
+    h1, h2, h3 {
+      color: #002b45;
+      margin-top: 18px;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      background: #eee;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+    a { color: #0077cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul, ol { padding-left: 1.2em; }
+    .note { background: #fffbe6; border-left: 4px solid #ffd24d; padding: 8px 12px; margin: 12px 0; border-radius: 4px; }
+    .small { font-size: 0.95em; color: #444; }
+  </style>
+</head>
+<body>
+
+  <h1>📦 ORDER.hs — Detailed Tutorial & Quick Reference</h1>
+  <p class="small">A friendly walkthrough of the <code>ORDER.hs</code> limit-order validator: what it does, important types, validator rules, helper functions, compilation & deployment notes, examples, and testing tips.</p>
+
+  <hr>
+
+  <h2>🔎 Table of Contents</h2>
+  <ol>
+    <li><a href="#imports">Imports Overview</a></li>
+    <li><a href="#purpose">Purpose & High-Level Behaviour</a></li>
+    <li><a href="#datastruct">Data Structures</a></li>
+    <li><a href="#core">Core Validator Logic</a></li>
+    <li><a href="#helpers">Important Helper Functions</a></li>
+    <li><a href="#untyped">Untyped Wrapper & Compilation</a></li>
+    <li><a href="#address">Hash / Address / File I/O</a></li>
+    <li><a href="#usage">Practical Usage Examples</a></li>
+    <li><a href="#testing">Testing Strategy</a></li>
+    <li><a href="#best">Best Practices & Security Notes</a></li>
+    <li><a href="#glossary">Glossary of Terms</a></li>
+  </ol>
+
+  <hr>
+
+  <h2 id="imports">1. 📦 Imports Overview</h2>
+
+  <p>The module pulls together on-chain and off-chain utilities. Key categories:</p>
+  <ul>
+    <li><strong>Plutus Tx / Prelude</strong> — <code>PlutusTx</code>, <code>PlutusTx.Prelude</code> for on-chain types, operations and serialization macros like <code>unstableMakeIsData</code>.</li>
+    <li><strong>Ledger / Contexts</strong> — <code>Plutus.V2.Ledger.Api</code>, <code>Plutus.V2.Ledger.Contexts</code> for <code>ScriptContext</code>, <code>TxInfo</code>, <code>Value</code>, and helpers like <code>txSignedBy</code>.</li>
+    <li><strong>Interval & Value</strong> — <code>Plutus.V1.Ledger.Interval</code> for time-range checks; <code>Plutus.V1.Ledger.Value</code> for <code>valueOf</code> and ADA helpers.</li>
+    <li><strong>Serialization & Cardano API</strong> — <code>Codec.Serialise</code>, <code>Cardano.Api</code>, and <code>Cardano.Api.Shelley</code> for writing out the compiled validator and producing a bech32 address.</li>
+  </ul>
+
+  <div class="note">
+    <strong>Note:</strong> The code uses <code>PlutusTx.unstableMakeIsData</code> for each data type to enable on-chain serialization. Make sure the types are Plutus-friendly (no lazy or unsupported fields).
+  </div>
+
+  <h2 id="purpose">2. 🎯 Purpose & High-Level Behaviour</h2>
+
+  <p><code>ORDER.hs</code> implements a simple on-chain limit-order book entry (a single order UTxO). The validator enforces two main paths:</p>
+  <ul>
+    <li><strong>Cancel:</strong> The order owner (maker) may cancel the order — requires owner signature.</li>
+    <li><strong>Fill:</strong> A taker fills some (or all) of the order — the validator checks amount, price constraints, expiry, fees, and the presence/contents of any continuing order datum (for partially filled orders).</li>
+  </ul>
+
+  <h2 id="datastruct">3. 🗃 Data Structures</h2>
+
+  <h3><code>Asset</code></h3>
+  <p>Represents an on-chain asset by <code>CurrencySymbol</code> and <code>TokenName</code>.</p>
+  <pre><code>data Asset = Asset
+  { aCurrency :: CurrencySymbol
+  , aToken    :: TokenName
+  }</code></pre>
+
+  <h3><code>Side</code></h3>
+  <p>Either <code>Buy</code> or <code>Sell</code>, used in price comparisons.</p>
+
+  <h3><code>OrderDatum</code></h3>
+  <p>The main datum stored on the UTxO:</p>
+  <ul>
+    <li><code>odOwner</code> — maker's <code>PubKeyHash</code>.</li>
+    <li><code>odBase</code>, <code>odQuote</code> — the assets involved (base/quote).</li>
+    <li><code>odSide</code> — buy or sell.</li>
+    <li><code>odLimitNum</code>, <code>odLimitDen</code> — rational limit price numerator/denominator.</li>
+    <li><code>odQty</code>, <code>odRemaining</code> — original quantity and remaining</li>
+    <li><code>odAllowPartial</code> — bool; whether partial fills are allowed.</li>
+    <li><code>odExpiry</code> — POSIXTime expiry/deadline for fills.</li>
+    <li><code>odFeeNum</code>, <code>odFeeDen</code>, <code>odFeeRecipient</code> — optional fee parameters and recipient.</li>
+  </ul>
+
+  <h3><code>OrderRedeemer</code></h3>
+  <p>Two actions:</p>
+  <pre><code>data OrderRedeemer
+  = Fill { fAmount :: Integer, fExecPriceNum :: Integer, fExecPriceDen :: Integer }
+  | Cancel</code></pre>
+
+  <hr>
+
+  <h2 id="core">4. 🧠 Core Validator Logic (mkOrderValidator)</h2>
+
+  <p>The validator is split into two top-level patterns: <code>Cancel</code> and <code>Fill</code>. Each path includes <code>traceIfFalse</code> checks that return helpful failure reasons.</p>
+
+  <h3>Cancel rules</h3>
+  <ul>
+    <li>Transaction must be signed by <code>odOwner</code>.</li>
+  </ul>
+
+  <h3>Fill rules (summary)</h3>
+  <ol>
+    <li><strong>Amount positive</strong> — <code>amt &gt; 0</code>.</li>
+    <li><strong>Remaining sufficient</strong> — <code>amt &le; odRemaining</code>.</li>
+    <li><strong>Partial fills</strong> — allowed only if <code>odAllowPartial</code> or the fill exhausts the remaining amount.</li>
+    <li><strong>Price limit</strong> — checks that execution price meets the maker's limit using integer math to avoid floats: <code>priceMeetsLimit</code>.</li>
+    <li><strong>Time</strong> — must be before or at <code>odExpiry</code> (uses tx validity interval).</li>
+    <li><strong>Maker receives expected funds</strong> — ensures the maker receives at least the expected quote (net of fees) for <code>Sell</code> or receives the base amount for <code>Buy</code>.</li>
+    <li><strong>Continuing datum</strong> — if some remainder remains, the continuing output must contain a single <code>OrderDatum</code> matching the original fields with an updated <code>odRemaining</code>. If fully filled, there must be no continuing order outputs.</li>
+  </ol>
+
+  <div class="note">
+    <strong>Tip:</strong> All monetary arithmetic uses integer division (<code>divide</code>) and explicit checks for zero denominators to prevent division-by-zero faults.
+  </div>
+
+  <h2 id="helpers">5. 🔧 Important Helper Functions (on-chain)</h2>
+
+  <ul>
+    <li><code>safeMulDiv num mul den</code> — safely compute <code>(num * mul) / den</code>, erroring on zero denominator.</li>
+    <li><code>assetValueOf v asset</code> — wrapper over <code>valueOf</code> for <code>Asset</code>.</li>
+    <li><code>txOutHasDatum</code> — tests if an output carries a datum.</li>
+    <li><code>getContinuingDatums</code> & <code>getContinuingOrderDatums</code> — collect datums attached to continuing script outputs for this validator (used to assert correct remaining value and shape).</li>
+    <li><code>containsBeforeOrAt expiry info</code> — checks tx valid range contains the time point at or before expiry (time-in-force semantics).</li>
+    <li><code>priceMeetsLimit side limitN limitD execN execD</code> — integer comparison adapted for buy/sell cases to determine if an execution price satisfies the maker's limit.</li>
+    <li><code>feeForQuote feeN feeD quoteAmount</code> — compute fee from quote amount, with zero-denominator guard.</li>
+  </ul>
+
+  <h2 id="untyped">6. 🧩 Untyped Wrapper & Compilation</h2>
+
+  <p>The code uses an untyped wrapper function to convert <code>BuiltinData</code> into typed values and return <code>()</code> on success or <code>traceError</code> on failure:</p>
+
+  <pre><code>{-# INLINABLE mkValidatorUntyped #-}
+mkValidatorUntyped :: BuiltinData -> BuiltinData -> BuiltinData -> ()
+mkValidatorUntyped d r c =
+  let od  = unsafeFromBuiltinData @OrderDatum d
+      red = unsafeFromBuiltinData @OrderRedeemer r
+      ctx = unsafeFromBuiltinData @ScriptContext c
+  in if mkOrderValidator od red ctx then () else traceError "validation failed"
+
+validator :: Validator
+validator = mkValidatorScript $$(PlutusTx.compile [|| mkValidatorUntyped ||])</code></pre>
+
+  <p class="small">This yields a <code>Validator</code> value which can be serialized and saved to disk.</p>
+
+  <h2 id="address">7. 🔗 Hash, Address & File I/O</h2>
+
+  <p>Key helper functions for off-chain / host-side tasks:</p>
+
+  <pre><code>plutusValidatorHash :: PlutusV2.Validator -> PlutusV2.ValidatorHash
+plutusScriptAddress :: Address
+toBech32ScriptAddress :: C.NetworkId -> Validator -> String
+writeValidator :: FilePath -> Validator -> IO ()</code></pre>
+
+  <p>Important notes:</p>
+  <ul>
+    <li>The <code>toBech32ScriptAddress</code> function uses the Cardano API to create a Shelley-era address that references the script hash (correct era and arg order are essential).</li>
+    <li><code>writeValidator</code> writes the serialized Plutus script to a file (e.g. <code>order-validator.plutus</code>).</li>
+  </ul>
+
+  <h2 id="usage">8. 🧪 Practical Usage Examples</h2>
+
+  <h3>Generate the compiled script & addresses</h3>
+  <pre><code>main :: IO ()
+main = do
+  let network = C.Testnet (C.NetworkMagic 1)
+  writeValidator "order-validator.plutus" validator
+  putStrLn "Validator written."
+  putStrLn ("Bech32: " <> toBech32ScriptAddress network validator)</code></pre>
+
+  <h3>Create a datum JSON (off-chain)</h3>
+  <p>Example (conceptually): convert an <code>OrderDatum</code> into JSON for use in transaction-building tools. You can use your project's utilities or cardano-cli helper scripts to produce the proper datum hex/CBOR.</p>
+
+  <h3>Typical lifecycle</h3>
+  <ol>
+    <li>Maker constructs and submits a transaction that creates a script UTxO with <code>OrderDatum</code> and the base/quote collateral locked at the script address.</li>
+    <li>Taker submits a transaction spending the script UTxO using <code>Fill</code> redeemer; the validator checks price, fees, continuing datum, and pays outputs accordingly.</li>
+    <li>Maker can cancel by signing a transaction with redeemer <code>Cancel</code> to remove the UTxO and recover funds.</li>
+  </ol>
+
+  <h2 id="testing">9. 🧷 Testing Strategy</h2>
+  <p>Always test extensively. Recommended tests:</p>
+  <ul>
+    <li><strong>Price boundary tests:</strong> exec price exactly equal to limit, just above, just below; both buy and sell.</li>
+    <li><strong>Partial fill tests:</strong> allow/disallow partial and assert continuing datum correctness.</li>
+    <li><strong>Expiry tests:</strong> attempt fills before, at, and after <code>odExpiry</code>.</li>
+    <li><strong>Fee edge cases:</strong> zero denominator in fee, non-zero fee, fee recipient present/absent.</li>
+    <li><strong>Continuing outputs:</strong> multiple continuations, none when expected — should fail with clear traces.</li>
+  </ul>
+
+  <p class="note"><strong>Testing tools:</strong> Use the Plutus emulator for unit-style tests, plus integration tests with cardano-cli or cardano-wallet for end-to-end flows.</p>
+
+  <h2 id="best">10. ✅ Best Practices & Security Notes</h2>
+
+  <ul>
+    <li><strong>Validate arithmetic explicitly:</strong> always guard denominators (done in <code>safeMulDiv</code> and <code>feeForQuote</code>).</li>
+    <li><strong>Keep datums minimal:</strong> the less complex the datum, the less chance of serialization mismatches or subtle bugs.</li>
+    <li><strong>Clear traces:</strong> use descriptive <code>traceIfFalse</code> messages (this code already includes helpful ones like <code>"fill: price does not meet limit"</code>).</li>
+    <li><strong>Re-entrancy / replay considerations:</strong> ensure continuing outputs are unique and validated so malicious replays can't subvert the remaining fields.</li>
+    <li><strong>Off-chain helpers:</strong> ensure that the off-chain code constructing transactions matches the on-chain expectations for UTxO shapes and value arithmetic.</li>
+  </ul>
+
+  <h2 id="glossary">11. 📘 Glossary of Terms</h2>
+  <table>
+    <tr><th>Term</th><th>Meaning</th></tr>
+    <tr><td><code>Validator</code></td><td>On-chain script that enforces rules for spending a UTxO.</td></tr>
+    <tr><td><code>Datum</code></td><td>Arbitrary on-chain data attached to a script UTxO.</td></tr>
+    <tr><td><code>Redeemer</code></td><td>Input provided when spending a script UTxO (the action).</td></tr>
+    <tr><td><code>Continuing output</code></td><td>A script output created by a transaction that keeps the same validator (e.g., post-partial fill).</td></tr>
+    <tr><td><code>Price numerator/denominator</code></td><td>Rational representation used to avoid floating point math.</td></tr>
+    <tr><td><code>POSIXTime</code></td><td>Timestamp type used in Plutus for deadlines/expiry checks.</td></tr>
+  </table>
+
+  <hr>
+
+  <h2>Appendix — Quick Reference: Common Failure Traces</h2>
+  <ul>
+    <li><code>"division by zero"</code> — attempted arithmetic with a zero denominator.</li>
+    <li><code>"cancel: owner signature required"</code> — cancel path lacked maker's signature.</li>
+    <li><code>"fill: not enough remaining"</code> — taker attempted to fill more than <code>odRemaining</code>.</li>
+    <li><code>"fill: price does not meet limit"</code> — execution price failed maker's limit test.</li>
+    <li><code>"expected exactly one continuing output"</code> — shape of continuing outputs isn't what validator expects.</li>
+  </ul>
+
+  <hr>
+
+  <p class="small">If you'd like, I can:</p>
+  <ul>
+    <li>Generate a printable HTML or Markdown variant of this tutorial.</li>
+    <li>Produce ready-to-run emulator unit tests (Plutus emulator) for the common scenarios above.</li>
+    <li>Provide a small off-chain example (cardano-cli or a simple Haskell off-chain snippet) that constructs a create-order and a fill-order transaction.</li>
+  </ul>
+
+  <p>Which of those would you like next? (Pick one and I’ll generate it straight away.)</p>
+
+</body>
+</html>

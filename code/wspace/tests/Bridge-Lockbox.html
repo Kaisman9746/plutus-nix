@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lockbox Custodial Bridge Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fdfdfd;
+      padding: 2px;
+      line-height: 1.7;
+      color: #222;
+      margin: auto;
+    }
+    h1, h2, h3 {
+      color: #002b45;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+    a {
+      color: #0077cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    ul, ol {
+      padding-left: 1.2em;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>🔐 Lockbox Smart Contract — Full Technical Tutorial</h1>
+
+<p>
+This guide explains the full structure and usage of your <strong>Lockbox.hs custodial bridge validator</strong>.  
+You will learn the purpose of each section, how the validator works on-chain, and how to use the compiled script off-chain.
+</p>
+
+<hr>
+
+<h2>📚 Table of Contents</h2>
+<ol>
+  <li><a href="#1-imports-overview">📦 Imports Overview</a></li>
+  <li><a href="#2-data-structures">🗃 Data Structures</a></li>
+  <li><a href="#3-helper-functions">🔧 Helper Functions</a></li>
+  <li><a href="#4-validator-logic">🧠 Core Validator Logic</a></li>
+  <li><a href="#5-untyped-wrapper">📦 Untyped Wrapper</a></li>
+  <li><a href="#6-validator-compilation">⚙ Script Compilation & Hashing</a></li>
+  <li><a href="#7-address-generation">🏦 Address Generation</a></li>
+  <li><a href="#8-writing-files">💾 Writing Validator Files</a></li>
+  <li><a href="#9-main-usage">🚀 Main Program Usage</a></li>
+  <li><a href="#10-testing-strategy">🧪 Testing Strategy</a></li>
+  <li><a href="#11-best-practices">✅ Best Practices</a></li>
+  <li><a href="#12-glossary">📘 Glossary</a></li>
+</ol>
+
+<hr>
+
+<h2 id="1-imports-overview">1. 📦 Imports Overview</h2>
+
+<h3>Plutus Core Modules</h3>
+<ul>
+  <li><strong>Plutus.V2.Ledger.Api</strong> — PKH, CurrencySymbol, TokenName, Value, Validator, ScriptContext.</li>
+  <li><strong>Plutus.V2.Ledger.Contexts</strong> — access inputs, outputs, signatures.</li>
+  <li><strong>Plutus.V1.Ledger.Interval</strong> — interval utilities.</li>
+  <li><strong>PlutusTx.Prelude</strong> — on-chain safe Prelude.</li>
+</ul>
+
+<h3>Serialization & Cardano API</h3>
+<ul>
+  <li><strong>Codec.Serialise</strong> — converts validator to CBOR for `.plutus` files.</li>
+  <li><strong>Cardano.Api</strong> — convert script to Bech32 address.</li>
+</ul>
+
+<hr>
+
+<h2 id="2-data-structures">2. 🗃 Data Structures</h2>
+
+<h3><code>LockboxDatum</code></h3>
+<p>This datum fully describes a locked bridge asset. It contains:</p>
+
+<ul>
+  <li><strong>lbUser</strong> — the depositor who will later receive the unlocked funds.</li>
+  <li><strong>lbAssetCurrency / lbAssetToken</strong> — the asset being locked.</li>
+  <li><strong>lbAmount</strong> — required amount.</li>
+  <li><strong>lbCustodian</strong> — must sign unlock (bridge authority).</li>
+  <li><strong>lbOracle</strong> — must sign unlock (burn attestation authority).</li>
+  <li><strong>lbLockboxNFTCS / lbLockboxNFTTN</strong> — identifies the exact UTxO (ensures uniqueness).</li>
+  <li><strong>lbFee</strong> — fee paid to custodian on unlock.</li>
+  <li><strong>lbExpectedBurn</strong> — hash of burn-proof from external chain.</li>
+</ul>
+
+<h3><code>LockboxAction</code></h3>
+<ul>
+  <li><strong>LLock</strong> — used when user deposits into the script.</li>
+  <li><strong>LUnlock burnHash</strong> — used when custodian + oracle approve release.</li>
+</ul>
+
+<hr>
+
+<h2 id="3-helper-functions">3. 🔧 Helper Functions</h2>
+
+<h3><code>scriptInputContainsNFT</code></h3>
+<p>Ensures the script UTxO includes its unique NFT. Prevents malicious UTxO injection.</p>
+
+<h3><code>valueLockedInInput</code></h3>
+<p>Reads how much of the target token is stored in the script input.</p>
+
+<h3><code>adaPaidTo</code></h3>
+<p>Ensures the custodian receives the fee.</p>
+
+<hr>
+
+<h2 id="4-validator-logic">4. 🧠 Core Validator Logic</h2>
+
+<h3>Lock Action (<code>LLock</code>)</h3>
+<p>Valid only if:</p>
+<ul>
+  <li>The lockbox NFT exists in the input.</li>
+  <li>The amount locked ≥ expected amount.</li>
+  <li>The user (depositor) signed the transaction.</li>
+</ul>
+
+<h3>Unlock Action (<code>LUnlock</code>)</h3>
+<p>Valid only if:</p>
+<ul>
+  <li>Custodian signs.</li>
+  <li>Oracle signs.</li>
+  <li>Provided burn hash == expected burn hash.</li>
+  <li>User receives the locked asset.</li>
+  <li>Custodian receives unlock fee.</li>
+</ul>
+
+<hr>
+
+<h2 id="5-untyped-wrapper">5. 📦 Untyped Wrapper</h2>
+
+<p>
+Plutus requires a <strong>BuiltinData → BuiltinData → BuiltinData</strong> function.  
+This wrapper converts raw data into <code>LockboxDatum</code> and <code>LockboxAction</code>.
+</p>
+
+<hr>
+
+<h2 id="6-validator-compilation">6. ⚙ Script Compilation & Hashing</h2>
+
+<h3><code>validator</code></h3>
+<p>
+Compiles the validator into a Plutus Core executable script.
+</p>
+
+<h3><code>plutusValidatorHash</code></h3>
+<p>
+Generates the ledger-level ValidatorHash using pure Plutus.
+</p>
+
+<hr>
+
+<h2 id="7-address-generation">7. 🏦 Address Generation</h2>
+
+<h3><code>plutusScriptAddress</code></h3>
+<p>Creates the on-chain Plutus script address.</p>
+
+<h3><code>toBech32ScriptAddress</code></h3>
+<p>Generates a Bech32 address for Testnet or Mainnet.</p>
+
+<hr>
+
+<h2 id="8-writing-files">8. 💾 Writing Validator Files</h2>
+
+<p><code>writeValidator</code> writes the script to:</p>
+
+<pre><code>lockbox-validator.plutus</code></pre>
+
+<hr>
+
+<h2 id="9-main-usage">9. 🚀 Main Program Usage</h2>
+
+<pre><code>cabal run lockbox-exe
+</code></pre>
+
+Output example:
+
+<ul>
+  <li>Validator written to file</li>
+  <li>Validator hash (Plutus)</li>
+  <li>Script address (on-chain)</li>
+  <li>Bech32 address (CLI compatible)</li>
+</ul>
+
+<hr>
+
+<h2 id="10-testing-strategy">10. 🧪 Testing Strategy</h2>
+
+<ul>
+  <li>Test LLock path: correct asset, NFT, signature.</li>
+  <li>Test LUnlock path: custodian + oracle signature required.</li>
+  <li>Test mismatched burn hashes.</li>
+  <li>Ensure custodian receives fee.</li>
+  <li>Ensure user receives assets.</li>
+</ul>
+
+<hr>
+
+<h2 id="11-best-practices">11. ✅ Best Practices</h2>
+<ul>
+  <li>Always test invalid cases (negative testing).</li>
+  <li>Use unique NFTs to represent UTxOs.</li>
+  <li>Keep burn hashes consistent with off-chain hashing rules.</li>
+  <li>Never trust off-chain values without oracle/custodian signatures.</li>
+</ul>
+
+<hr>
+
+<h2 id="12-glossary">12. 📘 Glossary</h2>
+
+<table>
+  <tr><th>Term</th><th>Definition</th></tr>
+  <tr><td><strong>Lockbox</strong></td><td>A contract that holds assets until external conditions are met.</td></tr>
+  <tr><td><strong>Custodian</strong></td><td>The authority that approves asset release.</td></tr>
+  <tr><td><strong>Oracle</strong></td><td>Authority providing burn-proof attestation.</td></tr>
+  <tr><td><strong>Burn Hash</strong></td><td>Hashed proof that assets were burned on another chain.</td></tr>
+  <tr><td><strong>UTxO NFT</strong></td><td>A unique token that identifies one script UTxO.</td></tr>
+  <tr><td><strong>Validator</strong></td><td>Smart contract that checks spending rules.</td></tr>
+  <tr><td><strong>Bech32</strong></td><td>Human-readable address format used by Cardano.</td></tr>
+</table>
+
+</body>
+</html>

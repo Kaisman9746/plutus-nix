@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Treasury Governance Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fdfdfd;
+      padding: 2px;
+      line-height: 1.7;
+      color: #222;
+      margin: auto;
+    }
+    h1, h2, h3 {
+      color: #002b45;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+    a {
+      color: #0077cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    ul, ol {
+      padding-left: 1.2em;
+    }
+  </style>
+</head>
+<body>
+
+<h1>🏛 Treasury Governance Smart Contract – Full Technical Tutorial</h1>
+
+<p>
+This document explains your governance-enabled <code>Treasury.hs</code> smart contract.  
+It covers the contract’s purpose, on-chain data structures, validator logic, helper functions, address generation, and deployment workflow.
+</p>
+
+<hr>
+
+<h2>📚 Table of Contents</h2>
+<ol>
+  <li><a href="#1-imports-overview">📦 Imports Overview</a></li>
+  <li><a href="#2-datatypes">🗃 On-Chain Data Types</a></li>
+  <li><a href="#3-actions">🚦 Treasury Actions</a></li>
+  <li><a href="#4-validator">🧠 Core Validator Logic</a></li>
+  <li><a href="#5-helpers">🔧 Helper Functions</a></li>
+  <li><a href="#6-script-gen">⚙ Script Compilation & Hashing</a></li>
+  <li><a href="#7-address">🏠 Script Address Generation</a></li>
+  <li><a href="#8-main">🖥 Main Script Execution</a></li>
+  <li><a href="#9-testing">🧪 Testing Strategy</a></li>
+  <li><a href="#10-best">✅ Best Practices</a></li>
+  <li><a href="#11-glossary">📘 Glossary of Terms</a></li>
+</ol>
+
+<hr>
+
+<h2 id="1-imports-overview">1. 📦 Imports Overview</h2>
+
+<h3>Plutus Modules</h3>
+<ul>
+  <li><strong>Plutus.V2.Ledger.Api</strong> — Provides <code>Validator</code>, <code>ScriptContext</code>, datums, redeemers, and value types.</li>
+  <li><strong>Plutus.V2.Ledger.Contexts</strong> — Used for <code>txSignedBy</code> and extracting values/signers.</li>
+  <li><strong>Plutus.V1.Ledger.Interval</strong> — For deadline and time range checks.</li>
+  <li><strong>Plutus.V1.Ledger.Value</strong> — For token / ADA extraction.</li>
+</ul>
+
+<h3>PlutusTx Compiler Utilities</h3>
+<ul>
+  <li><strong>PlutusTx</strong> — For compiling Haskell to Plutus Core.</li>
+  <li><strong>PlutusTx.Prelude</strong> — Drops Haskell prelude and brings Plutus-safe functions.</li>
+</ul>
+
+<h3>Serialization Modules</h3>
+<p>Used to convert the compiled validator into a <code>.plutus</code> file.</p>
+
+<h3>Cardano API</h3>
+<ul>
+  <li>Used for generating **Bech32 addresses** and hashing Plutus scripts.</li>
+</ul>
+
+<hr>
+
+<h2 id="2-datatypes">2. 🗃 On-Chain Data Types</h2>
+
+<h3><code>Split</code></h3>
+<ul>
+  <li><strong>spRecipient</strong>: target PubKeyHash</li>
+  <li><strong>spShare</strong>: amount/value</li>
+</ul>
+
+<h3><code>Treasury</code></h3>
+<ul>
+  <li><strong>trCommittee</strong>: list of governing committee members</li>
+  <li><strong>trQuorumPerc</strong>: required vote quorum percentage</li>
+  <li><strong>trMinProposal</strong>: minimum token or ADA required for a new proposal</li>
+</ul>
+
+<h3><code>Proposal</code></h3>
+<p>A full proposal entry stored in the datum:</p>
+<ul>
+  <li><strong>pId</strong>: unique proposal ID</li>
+  <li><strong>pProposer</strong>: the PubKeyHash that created it</li>
+  <li><strong>pRecipient</strong>: pay-to address if executed</li>
+  <li><strong>pAmount</strong>: amount of ADA to transfer</li>
+  <li><strong>pPurpose</strong>: human-readable purpose string</li>
+  <li><strong>pDeadline</strong>: expiration time</li>
+  <li><strong>pYes, pNo</strong>: vote counters</li>
+  <li><strong>pExecuted</strong>: prevents double execution</li>
+  <li><strong>Earmark fields</strong> for custom tokens (<code>CurrencySymbol</code>, <code>TokenName</code>)</li>
+</ul>
+
+<h3><code>TreasuryDatum</code></h3>
+<p>Contains:</p>
+<ul>
+  <li>The global <code>Treasury</code> configuration</li>
+  <li>List of all active <code>Proposal</code>s</li>
+</ul>
+
+<hr>
+
+<h2 id="3-actions">3. 🚦 Treasury Actions (Redeemer)</h2>
+
+<h3><code>Donate</code></h3>
+<p>Anyone can add funds to the treasury.</p>
+
+<h3><code>CreateProposal Proposal</code></h3>
+<p>Used by a committee member to create a new governance proposal.</p>
+
+<h3><code>Vote Bool ProposalId</code></h3>
+<p>Casts a vote for or against a given proposal ID.</p>
+
+<h3><code>ExecuteProposal ProposalId</code></h3>
+<p>Executes the proposal once the deadline has passed and quorum is met.</p>
+
+<hr>
+
+<h2 id="4-validator">4. 🧠 Core Validator Logic</h2>
+
+<p>The validator logic switches based on the <code>TreasuryAction</code> supplied.</p>
+
+<h3>✔ Donate</h3>
+<p>Checks that funds entering the script increase its balance.</p>
+
+<h3>✔ CreateProposal</h3>
+<ul>
+  <li>Caller must be a committee member.</li>
+  <li>Proposal amount must exceed <code>trMinProposal</code>.</li>
+  <li>Proposal ID must not already exist.</li>
+</ul>
+
+<h3>✔ Vote</h3>
+<ul>
+  <li>Proposal must exist.</li>
+  <li>Deadline must not be passed.</li>
+  <li>Proposal must not be executed.</li>
+</ul>
+
+<h3>✔ ExecuteProposal</h3>
+<ul>
+  <li>Voting must be finished (deadline passed).</li>
+  <li>Proposal must not be executed already.</li>
+  <li>Quorum & majority must be met.</li>
+  <li>Earmark policy (if present) must match payment.</li>
+  <li>Recipient must receive correct ADA amount.</li>
+</ul>
+
+<hr>
+
+<h2 id="5-helpers">5. 🔧 Helper Functions</h2>
+
+<h3><code>findProposal</code></h3>
+<p>Linear search for proposals inside datum.</p>
+
+<h3><code>totalSupplyOfEarmark</code></h3>
+<p>
+Ensures the receiving address gets the required earmarked token amount.
+</p>
+
+<h3><code>contains / after</code></h3>
+<p>Interval-based deadline checks.</p>
+
+<h3><code>quorumAndMajority</code></h3>
+<p>Checks:</p>
+<ul>
+  <li>Enough votes relative to <code>quorum%</code></li>
+  <li><code>pYes > pNo</code></li>
+</ul>
+
+<hr>
+
+<h2 id="6-script-gen">6. ⚙ Script Compilation & Hashing</h2>
+
+<p>The function:</p>
+<pre><code>validator :: Validator
+validator = mkValidatorScript $$(PlutusTx.compile [|| mkValidatorUntyped ||])
+</code></pre>
+
+<p>Compiles your validator to Plutus Core.</p>
+
+<p>Hashing logic converts the code into:</p>
+<ul>
+  <li><code>ValidatorHash</code></li>
+  <li>On-chain script address</li>
+  <li>Bech32 Shelley address</li>
+</ul>
+
+<hr>
+
+<h2 id="7-address">7. 🏠 Script Address Generation</h2>
+
+<p>Using Cardano.Api, the contract creates:</p>
+
+<ul>
+  <li>Plutus-level script hash</li>
+  <li>Full on-chain address (script credential)</li>
+  <li>Human-readable Bech32 script address</li>
+</ul>
+
+<p>This is the address you fund on-chain for donations and proposal execution.</p>
+
+<hr>
+
+<h2 id="8-main">8. 🖥 Main Execution</h2>
+
+<p>Your <code>main</code> function does the following:</p>
+<ol>
+  <li>Serializes the validator into <code>religion_treasury.plutus</code></li>
+  <li>Prints:
+    <ul>
+      <li>Plutus ValidatorHash</li>
+      <li>Plutus Address</li>
+      <li>Bech32 Address</li>
+    </ul>
+  </li>
+  <li>Confirms successful generation</li>
+</ol>
+
+<h3>Sample CLI Output</h3>
+<pre><code>--- Religion Treasury Validator Info ---
+Validator Hash: ...
+Bech32 Address: addr_test1...
+Religion treasury validator generated successfully.
+</code></pre>
+
+<hr>
+
+<h2 id="9-testing">9. 🧪 Testing Strategy</h2>
+
+<ul>
+  <li>Create proposal → vote → execute in simulation.</li>
+  <li>Test incorrect proposer (should fail).</li>
+  <li>Test duplicate proposal IDs (must fail).</li>
+  <li>Test voting before deadline (should pass).</li>
+  <li>Test execution before deadline (should fail).</li>
+  <li>Ensure executed proposal cannot be executed twice.</li>
+  <li>Validate ADA + earmark token flows.</li>
+</ul>
+
+<hr>
+
+<h2 id="10-best">10. ✅ Best Practices</h2>
+
+<ul>
+  <li>Use unique proposal IDs (e.g., SHA256 hashes).</li>
+  <li>Limit proposal list size in datum to reduce script cost.</li>
+  <li>Always test quorum logic with both high and low vote counts.</li>
+  <li>Ensure committee list and quorum percentage are chosen safely.</li>
+  <li>Validate all deadlines using POSIX conversions.</li>
+</ul>
+
+<hr>
+
+<h2 id="11-glossary">11. 📘 Glossary of Terms</h2>
+<table>
+  <tr><th>Term</th><th>Definition</th></tr>
+  <tr><td><strong>Treasury</strong></td><td>On-chain pool of funds governed by committee votes.</td></tr>
+  <tr><td><strong>Proposal</strong></td><td>A voting item describing an action, payment, or upgrade.</td></tr>
+  <tr><td><strong>Redeemer</strong></td><td>The action the user wants to perform.</td></tr>
+  <tr><td><strong>Quorum</strong></td><td>Minimum vote participation threshold.</td></tr>
+  <tr><td><strong>POSIXTime</strong></td><td>Time format used in Cardano smart contracts.</td></tr>
+  <tr><td><strong>Validator</strong></td><td>Smart contract logic that checks transaction validity.</td></tr>
+  <tr><td><strong>Bech32</strong></td><td>Human-readable address format for Cardano.</td></tr>
+  <tr><td><strong>ScriptContext</strong></td><td>Full transaction info available on-chain.</td></tr>
+  <tr><td><strong>Value</strong></td><td>Multi-asset token container (ADA or custom token).</td></tr>
+</table>
+
+</body>
+</html>

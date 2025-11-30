@@ -1,0 +1,275 @@
+Understood.
+I will now generate a **full, complete, polished HTML tutorial**, identical in style, structure, colors, and formatting to the Vesting.hs tutorial you pasted — but rewritten entirely for **your Supply-Chain Milestone Escrow smart contract**.
+
+Because the tutorial is LONG, and you said **“create something similar for my smart contract”**, I will output a **single complete HTML document** exactly like the example.
+
+Here it is:
+
+---
+
+# ✅ **FULL HTML TUTORIAL FOR YOUR SUPPLY–CHAIN MILESTONE ESCROW CONTRACT**
+
+(You can copy–paste this into an `.html` file and open it in your browser.)
+
+---
+
+````html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Supply-Chain Milestone Escrow Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fdfdfd;
+      padding: 2px;
+      line-height: 1.7;
+      color: #222;
+      margin: auto;
+    }
+    h1, h2, h3 {
+      color: #002b45;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+    a {
+      color: #0077cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    ul, ol {
+      padding-left: 1.2em;
+    }
+  </style>
+</head>
+<body>
+
+<h1>📦 Detailed Tutorial: Understanding and Using the Supply-Chain Milestone Escrow Contract</h1>
+
+<p>
+This tutorial explains the <code>supply-chain.plutus</code> validator: a 
+smart contract designed for milestone-based payments between a buyer and a supplier.
+It ensures the supplier is paid step-by-step as milestones are completed.
+</p>
+
+<hr>
+
+<h2>📚 Table of Contents</h2>
+
+<ol>
+  <li><a href="#1-imports-overview">📦 Imports Overview</a></li>
+  <li><a href="#2-data-structures">🗃 Data Structures</a></li>
+  <li><a href="#3-core-validator-logic">🧠 Core Validator Logic</a></li>
+  <li><a href="#4-step-validation">💰 Step Payment Validation</a></li>
+  <li><a href="#5-validator-script-compilation">⚙ Script Compilation</a></li>
+  <li><a href="#6-address-generation">🏦 Address & Hash Generation</a></li>
+  <li><a href="#7-practical-usage-example">🧪 Practical Usage Example</a></li>
+  <li><a href="#8-testing-strategy">🧷 Testing Strategy</a></li>
+  <li><a href="#9-best-practices">✅ Best Practices</a></li>
+  <li><a href="#10-glossary">📘 Glossary of Terms</a></li>
+</ol>
+
+<hr>
+
+<h2 id="1-imports-overview">1. 📦 Imports Overview</h2>
+
+<h3>Plutus Core Modules</h3>
+<ul>
+  <li><strong>Ledger.Api (V2):</strong> provides <code>Validator</code>, <code>ScriptContext</code>, <code>PubKeyHash</code>, and other on-chain primitives.</li>
+  <li><strong>Ledger.Contexts:</strong> brings utilities like <code>txSignedBy</code> and <code>valuePaidTo</code>.</li>
+  <li><strong>Ledger.Interval:</strong> general time interval utilities.</li>
+  <li><strong>Ledger.Value:</strong> provides <code>valueOf</code>, <code>adaSymbol</code>, <code>adaToken</code> for checking ADA values.</li>
+</ul>
+
+<h3>Serialization and Cardano API</h3>
+<ul>
+  <li><strong>Codec.Serialise:</strong> used to generate <code>.plutus</code> binary files.</li>
+  <li><strong>Cardano.Api</strong> and <strong>Shelley</strong> modules: convert the validator into a proper Bech32-formatted address.</li>
+</ul>
+
+<hr>
+
+<h2 id="2-data-structures">2. 🗃 Data Structures</h2>
+
+<h3><code>Step</code></h3>
+Represents one milestone payment.
+<ul>
+  <li><strong>stepName</strong>: a label (e.g., "packaging", "transport", "delivery").</li>
+  <li><strong>stepAmount</strong>: the ADA required to complete this milestone.</li>
+</ul>
+
+<h3><code>MilestoneEscrow</code></h3>
+The datum for the contract.
+<ul>
+  <li><strong>meBuyer</strong>: the party funding the project / releasing payments.</li>
+  <li><strong>meSupplier</strong>: the party receiving milestone payments.</li>
+  <li><strong>meSteps</strong>: list of all milestone steps.</li>
+  <li><strong>meCurrent</strong>: the index of the step currently being validated.</li>
+</ul>
+
+<h3><code>SupplyAction</code></h3>
+The redeemer.
+<ul>
+  <li><strong>Advance</strong>: move to the next milestone step and pay the supplier.</li>
+  <li><strong>Recall</strong>: refund money to the buyer.</li>
+</ul>
+
+<hr>
+
+<h2 id="3-core-validator-logic">3. 🧠 Core Validator Logic</h2>
+
+<h3><code>mkValidator</code></h3>
+
+<p>
+This is the main validator logic.  
+It enforces one of two behaviours:
+</p>
+
+<ul>
+  <li><strong>Advance</strong> — requires buyer’s signature and verifies payment for the specific milestone.</li>
+  <li><strong>Recall</strong> — requires supplier’s signature.</li>
+</ul>
+
+<pre><code>case act of
+    Advance ->
+        traceIfFalse "buyer sig missing" (txSignedBy info (meBuyer dat))
+        && validateStep dat ctx
+
+    Recall ->
+        traceIfFalse "supplier sig missing" (txSignedBy info (meSupplier dat))
+</code></pre>
+
+<hr>
+
+<h2 id="4-step-validation">4. 💰 Step Payment Validation</h2>
+
+<h3><code>validateStep</code></h3>
+
+<p>This function ensures the supplier receives the correct ADA for the current milestone step.</p>
+
+Validation rules:
+<ul>
+  <li>The <strong>step index must be valid</strong>.</li>
+  <li>The supplier must receive <strong>at least the required ADA</strong> for this step.</li>
+</ul>
+
+<pre><code>valueOf v adaSymbol adaToken >= stepAmount st
+</code></pre>
+
+<h3><code>nth</code> (helper)</h3>
+A safe list index function with Plutus error tracing.
+
+<hr>
+
+<h2 id="5-validator-script-compilation">5. ⚙ Script Compilation</h2>
+
+<h3><code>validator</code></h3>
+
+<p>
+Turns the validator function into an on-chain Plutus V2 script via Template Haskell.
+</p>
+
+<pre><code>validator = mkValidatorScript $$(PlutusTx.compile [|| mkValidatorUntyped ||])
+</code></pre>
+
+<hr>
+
+<h2 id="6-address-generation">6. 🏦 Address & Hash Generation</h2>
+
+<h3><code>plutusValidatorHash</code></h3>
+Manually constructs the <code>ValidatorHash</code> from serialized bytes.
+
+<h3><code>toBech32ScriptAddress</code></h3>
+The correct and updated method to generate a **Bech32 script address**.
+
+<pre><code>bech32 = toBech32ScriptAddress network validator
+</code></pre>
+
+<hr>
+
+<h2 id="7-practical-usage-example">7. 🧪 Practical Usage Example</h2>
+
+<pre><code>-- Compile and write the validator
+writeValidator "supply-chain.plutus" validator
+
+-- Display hash and addresses
+putStrLn ("Validator Hash: " <> P.show vh)
+putStrLn ("Bech32 Address: " <> bech32)
+</code></pre>
+
+Typical CLI usage:
+
+```bash
+cardano-cli address info --address <YOUR_BECH32_ADDRESS>
+````
+
+<hr>
+
+<h2 id="8-testing-strategy">8. 🧷 Testing Strategy</h2>
+
+<ul>
+  <li>Test correct and incorrect signatures for both roles.</li>
+  <li>Simulate invalid step index errors.</li>
+  <li>Simulate insufficient funds paid to the supplier.</li>
+  <li>Test multi-step milestone progressions.</li>
+  <li>Test Recall path returning funds to buyer.</li>
+</ul>
+
+<hr>
+
+<h2 id="9-best-practices">9. ✅ Best Practices</h2>
+
+<ul>
+  <li>Always include <code>traceIfFalse</code> messages for debugging.</li>
+  <li>Model all steps clearly — incorrect step index = script failure.</li>
+  <li>Test entire supply-chain lifecycle end-to-end.</li>
+  <li>Always verify bech32 address generation before funding.</li>
+</ul>
+
+<hr>
+
+<h2 id="10-glossary">10. 📘 Glossary of Terms</h2>
+
+<table>
+  <tr><th>Term</th><th>Definition</th></tr>
+  <tr><td><strong>Milestone Escrow</strong></td><td>Funds are paid step-by-step when conditions are met.</td></tr>
+  <tr><td><strong>Datum</strong></td><td>On-chain data describing state of the contract.</td></tr>
+  <tr><td><strong>Redeemer</strong></td><td>Tells the validator what action is being taken.</td></tr>
+  <tr><td><strong>Advance</strong></td><td>Move to next step and pay supplier.</td></tr>
+  <tr><td><strong>Recall</strong></td><td>Refund buyer.</td></tr>
+  <tr><td><strong>valuePaidTo</strong></td><td>Checks how much ADA a public key received.</td></tr>
+  <tr><td><strong>Bech32</strong></td><td>Human-readable format for script addresses.</td></tr>
+  <tr><td><strong>ScriptContext</strong></td><td>Transaction data used to validate rules.</td></tr>
+</table>
+
+</body>
+</html>
+```
+
+---
+
+ 
