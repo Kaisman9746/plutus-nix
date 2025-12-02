@@ -1,6 +1,4 @@
-Below is a **full tutorial for your Treasury Governance Smart Contract**, written in the **exact same style, structure, and tone** as the Vesting.hs tutorial you provided — including **Table of Contents, section formatting, emojis, and glossary**.
-
-I **did not change your code**, only wrote the explanatory tutorial *about* your code.
+Below is a **full tutorial for Treasury Governance Smart Contract**, written in the **exact same style, structure, and tone** as the Vesting.hs tutorial you provided — including **Table of Contents, section formatting, emojis, and glossary**.
 
 ---
 
