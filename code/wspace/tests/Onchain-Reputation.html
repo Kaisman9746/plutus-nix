@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Reputation Escrow Smart Contract Tutorial</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #fdfdfd;
+      padding: 2px;
+      line-height: 1.7;
+      color: #222;
+      margin: auto;
+    }
+    h1, h2, h3 {
+      color: #002b45;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 10px;
+      text-align: left;
+    }
+    a {
+      color: #0077cc;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    ul, ol {
+      padding-left: 1.2em;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🧾 Detailed Tutorial: Understanding and Using the Reputation-Based Milestone Escrow Contract</h1>
+
+  <p>
+    This tutorial explains the architecture, data structures, validator rules, and usage of the
+    <strong>Reputation Escrow Smart Contract</strong>.  
+    The contract enables secure milestone-based payments between an employer and a freelancer,
+    while simultaneously building an on-chain <strong>reputation score</strong>.
+  </p>
+
+  <hr>
+
+  <h2>📚 Table of Contents</h2>
+  <ol>
+    <li><a href="#1-imports-overview">📦 Imports Overview</a></li>
+    <li><a href="#2-data-structures">🗃 Data Structures</a></li>
+    <li><a href="#3-core-validator-logic">🧠 Core Validator Logic</a></li>
+    <li><a href="#4-compilation-hash-address">⚙ Script Compilation, Hashing & Address</a></li>
+    <li><a href="#5-file-output">💾 Writing Script Files (Plutus & CBOR Hex)</a></li>
+    <li><a href="#6-practical-usage-example">🧪 Practical Usage Example</a></li>
+    <li><a href="#7-testing-strategy">🧷 Testing Strategy</a></li>
+    <li><a href="#8-best-practices">✅ Best Practices</a></li>
+    <li><a href="#9-glossary-of-terms">📘 Glossary of Terms</a></li>
+  </ol>
+
+  <hr>
+
+  <!-- SECTION 1 -->
+  <h2 id="1-imports-overview">1. 📦 Imports Overview</h2>
+
+  <p>
+    The contract imports modules from Plutus V2, the Cardano API, serialization utilities,
+    and Haskell standard libraries. Each group of imports serves a well-defined purpose.
+  </p>
+
+  <h3>🔹 Plutus API Modules</h3>
+  <ul>
+    <li><strong>Plutus.V2.Ledger.Api</strong> – Core types: <code>ScriptContext</code>, <code>POSIXTime</code>, <code>TxOut</code>, <code>Validator</code>.</li>
+    <li><strong>Plutus.V2.Ledger.Contexts</strong> – Functions like <code>findOwnInput</code>, <code>valuePaidTo</code>, <code>txSignedBy</code>.</li>
+    <li><strong>Plutus.V1.Ledger.Interval</strong> – For enforcing deadlines via <code>contains</code> and <code>from</code>.</li>
+    <li><strong>Plutus.V1.Ledger.Value</strong> – To check ADA paid to freelancer using <code>valueOf</code>.</li>
+  </ul>
+
+  <h3>🔹 PlutusTx Meta-Programming</h3>
+  <ul>
+    <li><strong>PlutusTx</strong> – Compiles Haskell to on-chain Plutus Core.</li>
+    <li><strong>unstableMakeIsData</strong> – Generates serialization code for datum/redeemer.</li>
+    <li><strong>makeLift</strong> – Enables on-chain lifting of Haskell structures.</li>
+    </ul>
+
+  <h3>🔹 Serialization Modules</h3>
+  <ul>
+    <li><strong>Codec.Serialise</strong> – Converts the validator into CBOR format.</li>
+    <li><strong>Data.ByteString.Base16</strong> – Produces hex-encoded CBOR files.</li>
+  </ul>
+
+  <h3>🔹 Cardano API</h3>
+  <ul>
+    <li><strong>Cardano.Api</strong> – Generates Bech32 script addresses.</li>
+    <li><strong>Cardano.Api.Shelley</strong> – Supports Plutus script serialization (V2).</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 2 -->
+  <h2 id="2-data-structures">2. 🗃 Data Structures</h2>
+
+  <h3>📌 <code>EscrowDatum</code></h3>
+  <p>The datum represents the current state of the contract stored on-chain. It includes:</p>
+
+  <ul>
+    <li><strong>edEmployer</strong> – Wallet that funds the escrow and approves milestones.</li>
+    <li><strong>edFreelancer</strong> – Wallet that receives ADA payouts.</li>
+    <li><strong>edAmountPerMilestone</strong> – ADA payment required for milestone approval.</li>
+    <li><strong>edMilestonesRemaining</strong> – Decreases when milestones are completed.</li>
+    <li><strong>edReputation</strong> – Freelancer’s on-chain performance score (+1 per milestone).</li>
+    <li><strong>edDeadline</strong> – After this timestamp, employer is allowed to request refunds.</li>
+  </ul>
+
+  <h3>📌 <code>EscrowAction</code> (Redeemer)</h3>
+
+  <ul>
+    <li><strong>ApproveMilestone</strong> – Employer approves a milestone → freelancer is paid.</li>
+    <li><strong>RefundEmployer</strong> – Employer retrieves remaining funds after deadline.</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 3 -->
+  <h2 id="3-core-validator-logic">3. 🧠 Core Validator Logic</h2>
+
+  <p>
+    The contract’s validator (<code>mkValidator</code>) enforces strict milestone-based escrow rules.
+    The behavior changes depending on the redeemer action:
+  </p>
+
+  <h3>✔ 3.1 ApproveMilestone</h3>
+  <p><strong>Conditions:</strong></p>
+  <ul>
+    <li>Must contain the script's own input.</li>
+    <li>Must be signed by the employer.</li>
+    <li>Freelancer must receive ADA ≥ <code>edAmountPerMilestone</code>.</li>
+    <li>If milestones remain, the continuing output must contain:</li>
+    <ul>
+      <li><code>edMilestonesRemaining - 1</code></li>
+      <li><code>edReputation + 1</code></li>
+      <li>All other fields unchanged</li>
+    </ul>
+    <li>If this is the final milestone → contract ends, no continuing output required.</li>
+  </ul>
+
+  <h3>✔ 3.2 RefundEmployer</h3>
+  <p><strong>Conditions:</strong></p>
+  <ul>
+    <li>Must contain the script’s own input.</li>
+    <li>Must be signed by employer.</li>
+    <li>Current time range must be after <code>edDeadline + 1</code>.</li>
+  </ul>
+
+  <h3>🔍 3.3 Important Internal Functions</h3>
+
+  <h4><code>scriptInputExists</code></h4>
+  Checks that the transaction consumes the UTxO locked by this script.
+
+  <h4><code>freelancerPaid</code></h4>
+  Ensures freelancer receives enough ADA.
+
+  <h4><code>correctContinuingDatum</code></h4>
+  Ensures state update rules are followed:
+  <ul>
+    <li>Remaining milestones decremented</li>
+    <li>Reputation incremented</li>
+    <li>All other fields unchanged</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 4 -->
+  <h2 id="4-compilation-hash-address">4. ⚙ Script Compilation, Hashing & Address Generation</h2>
+
+  <h3>✔ <code>mkValidatorUntyped</code> → Raw on-chain validator</h3>
+  Converts datum, redeemer, and script context from <code>BuiltinData</code> into Haskell types.
+
+  <h3>✔ <code>validator</code></h3>
+  Uses <code>PlutusTx.compile</code> to produce a Plutus V2 script.
+
+  <h3>✔ <code>plutusValidatorHash</code></h3>
+  Serializes the validator into CBOR, converts to a builtin byte string,
+  and constructs a <code>ValidatorHash</code>.
+
+  <h3>✔ <code>plutusScriptAddress</code></h3>
+  Constructs a script address using the Plutus-level hash.
+
+  <h3>✔ <code>toBech32ScriptAddress</code></h3>
+  Uses Cardano API to produce:
+  <pre><code>addr_test1...  (Testnet)
+addr1...       (Mainnet)
+</code></pre>
+
+  <hr>
+
+  <!-- SECTION 5 -->
+  <h2 id="5-file-output">5. 💾 Writing Script Files</h2>
+
+  <h3>✔ <code>writeValidator</code></h3>
+  Stores raw serialized CBOR script:
+  <pre><code>reputation-escrow.plutus</code></pre>
+
+  <h3>✔ <code>writeCBORHex</code></h3>
+  Stores hex-encoded CBOR:
+  <pre><code>reputation-escrow.hex</code></pre>
+
+  These files are needed for:
+  <ul>
+    <li>cardano-cli transactions</li>
+    <li>Plutus Wallets (e.g. Mesh, Lucid, Aiken off-chain clients)</li>
+    <li>Deployment to testnet/mainnet</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 6 -->
+  <h2 id="6-practical-usage-example">6. 🧪 Practical Usage Example</h2>
+
+  <pre><code>
+-- Compile and output validator + CBOR
+cabal run reputation-escrow
+
+-- Resulting output
+Reputation Escrow validator and CBOR hex generated successfully.
+
+-- Files created
+reputation-escrow.plutus
+reputation-escrow.hex
+</code></pre>
+
+  <h3>✔ Get the script’s Bech32 address</h3>
+  <pre><code>
+let bech = toBech32ScriptAddress Testnet validator
+putStrLn bech
+</code></pre>
+
+  <h3>✔ Construct the initial datum (off-chain)</h3>
+  <p>You must supply:</p>
+  <ul>
+    <li>Employer PubKeyHash</li>
+    <li>Freelancer PubKeyHash</li>
+    <li>Amount per milestone</li>
+    <li>Total milestones</li>
+    <li>Initial reputation (usually 0)</li>
+    <li>Deadline</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 7 -->
+  <h2 id="7-testing-strategy">7. 🧷 Testing Strategy</h2>
+  <ul>
+    <li>Simulate milestone approval with insufficient freelancer payment → should fail.</li>
+    <li>Test correct continuation datum updates for multiple milestones.</li>
+    <li>Test termination of contract when last milestone completes.</li>
+    <li>Test refund path before deadline → should fail.</li>
+    <li>Test refund path after deadline → should succeed.</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 8 -->
+  <h2 id="8-best-practices">8. ✅ Best Practices</h2>
+  <ul>
+    <li>Always lock enough ADA for all milestones upfront.</li>
+    <li>Use clear and deterministic datum updates.</li>
+    <li>Add logging (<code>traceIfFalse</code>) for debugging.</li>
+    <li>Keep deadlines realistic to avoid accidental fund locking.</li>
+    <li>Thoroughly test redeemer mismatches and edge cases.</li>
+  </ul>
+
+  <hr>
+
+  <!-- SECTION 9 -->
+  <h2 id="9-glossary-of-terms">9. 📘 Glossary of Terms</h2>
+
+  <table>
+    <tr><th>Term</th><th>Definition</th></tr>
+    <tr><td><strong>Escrow</strong></td><td>Funds locked until conditions are met.</td></tr>
+    <tr><td><strong>Milestone</strong></td><td>Individual deliverable requiring approval.</td></tr>
+    <tr><td><strong>Reputation</strong></td><td>Performance score increased on milestone approval.</td></tr>
+    <tr><td><strong>Deadline</strong></td><td>Time after which employer may reclaim funds.</td></tr>
+    <tr><td><strong>Datum</strong></td><td>State stored on-chain with each script UTxO.</td></tr>
+    <tr><td><strong>Redeemer</strong></td><td>Action requested: milestone approval or refund.</td></tr>
+    <tr><td><strong>Validator</strong></td><td>Logic enforcing correct transaction behavior.</td></tr>
+    <tr><td><strong>valuePaidTo</strong></td><td>Checks ADA sent to a particular address.</td></tr>
+    <tr><td><strong>CBOR</strong></td><td>Binary encoding format used for scripts.</td></tr>
+    <tr><td><strong>Bech32</strong></td><td>Human-readable Cardano address encoding.</td></tr>
+  </table>
+
+</body>
+</html>
