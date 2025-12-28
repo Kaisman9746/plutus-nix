@@ -83,6 +83,24 @@ executable escrow-exe
         cardano-ledger-shelley
     default-language:   Haskell2010
 
+executable blockchain-system-exe
+    main-is:            BLOCKCHAIN-SYSTEM.hs
+    hs-source-dirs:     tests
+    build-depends:
+        base >=4.14 && <5,
+        plutus-ledger-api,
+        plutus-tx,
+        plutus-tx-plugin,
+        bytestring,
+        serialise,
+        text,
+        containers,
+        cardano-api,
+        cardano-ledger-core,
+        cardano-ledger-shelley,
+        base16-bytestring
+    default-language:   Haskell2010
+
 executable cross-border-exe
     main-is:            Cross-border.hs
     hs-source-dirs:     tests
@@ -97,7 +115,9 @@ executable cross-border-exe
         containers,
         cardano-api,
         cardano-ledger-core,
-        cardano-ledger-shelley
+        cardano-ledger-shelley,
+        base16-bytestring
+
     default-language:   Haskell2010
 
 executable on-chain-reputation-exe
