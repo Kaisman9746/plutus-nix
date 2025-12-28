@@ -208,3 +208,4 @@ main = do
     putStrLn $ "Bech32 Address:          " <> toBech32ScriptAddress network validator
     putStrLn "------------------------------------------------"
     putStrLn "Subsidy transparency validator generated successfully."
+
